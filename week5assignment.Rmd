@@ -1,0 +1,232 @@
+---
+output:
+  pdf_document:
+    df_print: kable
+header-includes:
+  \usepackage{fancyhdr}
+  \pagestyle{fancy}
+  \fancyhead[L]{\textbf{Wine Purchase Inference}}
+  \fancyhead[R]{\thepage}
+  \fancyfoot[C]{}
+---
+
+```{r setup, include=FALSE, cache=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(magrittr)
+library(knitr)
+library(caret)
+library(car)
+library(mice)
+library(lars)
+library(pscl)
+wine <- read_csv('C:\\Users\\Brian\\Desktop\\GradClasses\\Summer18\\621\\621week5\\wine-training-data.csv') %>%
+  dplyr::select(-INDEX) %>%
+  mutate(LabelAppeal = factor(LabelAppeal),
+         STARS = factor(STARS))
+```
+
+#Abstract
+
+I have been tasked with created 6 regressions in an effort to predict the number of cases of wine purchased based on a number of predictors about the wine. The response variable is a count of the number of cases of wine purchased. There are 12795 observations, 14 predictors and 1 response variable. 
+
+I will begin by analysizing the initial raw data and then perform 2 multiple linear regressions, 2 poisson regression and 2 negative binomial regressions. From there I will select the best model to deploy.
+
+#Data Exploration
+
+The raw data was read in and after an initial inspection only a few small modification needed to be made. I removed the INDEX column as it was unnecessary and modified LabelAppeal and STARS to be factors as indicated by their descriptions.
+
+From there I explored the number of missing values in the data set.
+
+```{r, cache=TRUE}
+wine %>%
+  map_dbl(~sum(is.na(.))/nrow(wine))
+```
+
+There are a number of missing values in the data set but more of them comprise a relatively small proportion of the total observations. This should not be problematic to deal with. However, I am missing more than a quarter of all the STARS rankings. This is a sizeable amount of data. My first intuition is to remove this predictor but there is reason to believe that it will be highly significant as a predictor. There is strong evidence to suggest that people are not all that knowlege about wine purchases and will largely base their decisions on arguments from authority. Therefore, an external ranking system seems important. There is also another problem exhibited by the `aggr` plot
+
+```{r cache=TRUE}
+VIM::aggr(wine[, -1], col=c('navyblue', 'yellow'),
+          numbers=TRUE, sortVars=TRUE, 
+          labels=names(wine[, -1]), cex.axis=.7,
+          gap=3, ylab=c('Missing Data', 'Pattern'), combined=TRUE)
+```
+
+The above plot highlights all the missing values. As expected the two largest groups include the data with nothing missing followed by data only missing STARS. The problem, however, are most of the other observations. Although any given predictor is missing fewer than 10% of it's data, those missing observations are clumped together. That is, there are many observations that are missing multiple pieces of data. This is problematic as I do not feel comfortable imputed nearly half of the predictors for a wine. Imputation is powerful, but it is not magical.
+
+As a result I decide to remove observations missing 2 or more predcitors and impute the rest of the data. The choice for cutoff is somewhat arbitrary but I feel as if it gives a good balance of keeping as many observations as possible without imputing too much missing data.
+
+```{r cache=TRUE}
+temp.wine <- wine %>%
+  filter(rowSums(is.na(wine)) <= 1) 
+
+VIM::aggr(temp.wine[, -1], col=c('navyblue', 'yellow'),
+          numbers=TRUE, sortVars=TRUE, 
+          labels=names(temp.wine[, -1]), cex.axis=.7,
+          gap=3, ylab=c('Missing Data', 'Pattern'), combined=TRUE)
+```
+
+With the data missing multiple predictors removed, I am ready to impute the data. In total, only about 10% of the observations were removed. 
+
+```{r cache=TRUE, warning=FALSE}
+set.seed(123)
+imputed.data <- mice::mice(temp.wine[, -1], m=5, maxit=50, method='pmm', seed=500, printFlag=FALSE)
+wine.complete <- cbind(temp.wine[, 1], complete(imputed.data, 1))
+```
+
+From there I create a training and testing partition to test my various models. 
+
+```{r cache=TRUE}
+set.seed(1)
+part <- caret::createDataPartition(wine.complete$TARGET, p=0.8, list=FALSE)
+wine.training <- wine.complete %>%
+  filter(row_number() %in% part)
+wine.testing <- wine.complete %>%
+  filter(!row_number() %in% part)
+```
+
+With the data imputed and seperated, I am ready to create models.
+
+#Multiple Linear Regression
+
+In general, when working with count data a poisson regression is prefered. However, if the count is large enough a multiple linear regression is a valid substitution. Given that the TARGET count in this case only ranges from 0 to 8 it seems unlikely that a multiple linear regression will be sufficient. It may be useful though to compare these models to the other regressions.
+
+##Model 1
+
+The first model is be created by initially supplying all the predictors and then using `stepAIC` to select the needed predictors
+
+```{r}
+lm.1 <- lm(TARGET ~ ., data=wine.training)
+stepAIC(lm.1, trace=0)
+lm.1 <- update(lm.1, . ~ . -FixedAcidity -CitricAcid -ResidualSugar)
+summary(lm.1)
+```
+
+The diagnostics [SEE APPENDIX] have many causes for concern. The most immediately obvious issue is the heteroscedasticity seen in the variance and the lack of a normal fit on the qqplot. Transformational tools are problematic as well due to the fact that the response variable has 0s.
+
+##Model 2
+
+For the 2nd model I will attempt to use a robust fitting to address the heteroscedasticity seen in the previous model. [SEE APPENDIX]
+
+```{r cache=TRUE}
+lm.2 <- rlm(TARGET ~ . -FixedAcidity -CitricAcid -ResidualSugar, wine.training)
+summary(lm.2)
+```
+
+Overall, neither of these two models appear to adequetly address the data. I will examine next with a poisson regression.
+
+#Poisson Regression
+
+##Model 3
+
+Poisson regressions are best for count data, like the TARGET response variable we have with this data set. However, there is a limitation to the poisson regression in that the mean and variance are equal. There is the possibility for overdispersion in real world data. I will need to examine that in the models.
+
+For model 3 I used a poisson regression and selected the predictors using lasso. [SEE APPENDIX].
+
+```{r cache=TRUE}
+lm.3 <- glm(TARGET ~ . -CitricAcid, wine.training, family=poisson)
+summary(lm.3)
+```
+
+Examining the model indicates a very poor fit. Calculating the dispersion parameter indicates that dispersion does not appear to be a problem however. To be sure, I will fit a quasipoisson regression.
+
+```{r cache=TRUE}
+pchisq(lm.3$deviance, df=lm.3$df.residual, lower.tail=FALSE)
+sum(residuals(lm.3, type='pearson')^2)/lm.3$df.res
+```
+
+##Model 4
+
+As mentioned above I fit a quasipoisson regression and used lasso to select the predictors. The dispersion of 0.83 indicates an underdispersion as opposed to an overdispersion and it's closeness to 1 indicates that dispersion, in general, is not a problem for this model.
+
+```{r cache=TRUE}
+lm.4 <- glm(TARGET ~ . -FixedAcidity, wine.training, family=quasipoisson)
+summary(lm.4)
+```
+
+```{r cache=TRUE}
+pchisq(lm.4$deviance, df=lm.4$df.residual, lower.tail=FALSE)
+```
+
+This model still appears to be a poor fit.
+
+#Negative Binomial
+
+##Model 5
+
+When a model appears as if it should follow a poisson distribution but the poisson model does not appear to be an appropriate fit, a negative biniomial model may address the underlying issues. I will fitt a negative binomial model and select the predictors using `stepAIC`.
+
+```{r cache=TRUE, warning=FALSE}
+lm.5 <- glm.nb(TARGET ~ ., data=wine.complete)
+stepAIC(lm.5, trace=0)
+lm.5 <- update(lm.5, . ~ . -FixedAcidity -ResidualSugar)
+summary(lm.5)
+```
+
+The model appears to suffer from a similar slate of issues in the diagnostics are in the previous models. [SEE APPENDIX]
+
+##Model 6
+
+Exploring the TARGET in the training data reveals a disproportionately large amount of 0 values. 0s make up more than 20% of the total date, nearly double the proportional amount. This indicates that there is a hurdle in the number of cases purchased. That is, most wines have 0 purchases but amongst wines that have been purchased there is a nairly normal distribution.
+
+```{r cache=TRUE}
+wine.training %>% 
+  group_by(TARGET) %>%
+  count()
+```
+
+For the last model, I will fit a hurdle model. This will create two models -- a logistic to determine whether bottles were purchased and a poisson indicating how many bottles were purchased. I fit two different sets of predictors for the two parts of the model based on their separate diagnostics. [SEE APPENDIX]
+
+```{r cache=TRUE}
+lm.6 <- hurdle(TARGET ~ . -CitricAcid | . -FixedAcidity -ResidualSugar -Density -Alcohol, wine.complete)
+summary(lm.6)
+```
+
+#SELECT MODELS
+
+I will use the withheld testing data set to compare the 6 models before making a final selection.
+
+##MODEL 1
+
+```{r cache=TRUE, warning=FALSE}
+pred.1 <- predict(lm.1, newdata=wine.testing, interval='confidence')
+sum(ifelse(pred.1[, 2] < wine.testing[, 1] & pred.1[, 3] > wine.testing[, 1], 1, 0))
+
+pred.2 <- predict(lm.2, newdata=wine.testing, interval='confidence')
+sum(ifelse(pred.2[, 2] < wine.testing[, 1] & pred.2[, 3] > wine.testing[, 1], 1, 0))
+
+pred.3 <- predict(lm.3, newdata=wine.testing, type='link', se.fit=TRUE)
+pred.3.upr <- pred.3$fit + (1.96*pred.3$se.fit)
+pred.3.lwr <- pred.3$fit - (1.96*pred.3$se.fit)
+pred.3.data <- data_frame(fit=pred.3$fit, lwr=pred.3.lwr, upr=pred.3.upr)
+sum(ifelse(exp(pred.3.data[, 2]) < wine.testing[, 1] & exp(pred.3.data[, 3]) > wine.testing[, 1], 1, 0))
+
+pred.4 <- predict(lm.4, newdata=wine.testing, type='link', se.fit=TRUE)
+pred.4.upr <- pred.4$fit + (1.96*pred.4$se.fit)
+pred.4.lwr <- pred.4$fit - (1.96*pred.4$se.fit)
+pred.4.data <- data_frame(fit=pred.4$fit, lwr=pred.4.lwr, upr=pred.4.upr)
+sum(ifelse(exp(pred.4.data[, 2]) < wine.testing[, 1] & exp(pred.4.data[, 3]) > wine.testing[, 1], 1, 0))
+
+pred.5 <- predict(lm.5, newdata=wine.testing, type='link', se.fit=TRUE)
+pred.5.upr <- pred.5$fit + (1.96*pred.5$se.fit)
+pred.5.lwr <- pred.5$fit - (1.96*pred.5$se.fit)
+pred.5.data <- data_frame(fit=pred.5$fit, lwr=pred.5.lwr, upr=pred.5.upr)
+sum(ifelse(exp(pred.5.data[, 2]) < wine.testing[, 1] & exp(pred.5.data[, 3]) > wine.testing[, 1], 1, 0))
+
+pred.6 <- predict(lm.6, newdata=wine.testing, type='prob')
+sum(ifelse(exp(pred.6.data[, 2]) < wine.testing[, 1] & exp(pred.6.data[, 3]) > wine.testing[, 1], 1, 0))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
