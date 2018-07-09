@@ -5,7 +5,7 @@ output:
 header-includes:
   \usepackage{fancyhdr}
   \pagestyle{fancy}
-  \fancyhead[L]{\textbf{Wine Purchase Inference}}
+  \fancyhead[L]{\textbf{Wine Purchase Regression}}
   \fancyhead[R]{\thepage}
   \fancyfoot[C]{}
 ---
@@ -22,6 +22,8 @@ library(lars)
 library(pscl)
 library(vcd)
 library(MASS)
+library(AICcmodavg)
+library(corrplot)
 wine <- read_csv('C:\\Users\\Brian\\Desktop\\GradClasses\\Summer18\\621\\621week5\\wine-training-data.csv') %>%
   dplyr::select(-INDEX) %>%
   mutate(LabelAppeal = factor(LabelAppeal),
@@ -30,24 +32,25 @@ wine <- read_csv('C:\\Users\\Brian\\Desktop\\GradClasses\\Summer18\\621\\621week
 
 #Abstract
 
-I have been tasked with created 6 regressions in an effort to predict the number of cases of wine purchased based on a number of predictors about the wine. The response variable is a count of the number of cases of wine purchased. There are 12795 observations, 14 predictors and 1 response variable. 
+I have been tasked with creating 6 regressions in an effort to predict the number of cases of wine purchased based on a number of predictors about the wine. The response variable is a count of the number of cases of wine purchased. There are 12795 observations, 14 predictors and 1 response variable. 
 
 I will begin by analysizing the initial raw data and then perform 2 multiple linear regressions, 2 poisson regression and 2 negative binomial regressions. From there I will select the best model to deploy.
 
-#Data Exploration
+#Data Preparation
 
-The raw data was read in and after an initial inspection only a few small modification needed to be made. I removed the INDEX column as it was unnecessary and modified LabelAppeal and STARS to be factors as indicated by their descriptions.
+The raw data was read in and after an initial inspection only a few small modification needed to be made. I removed the INDEX column as it was unnecessary and modified LabelAppeal and STARS to be factors as indicated by their descriptions. The rest of the predictors are continuous or discrete.
 
 From there I explored the number of missing values in the data set.
 
 ```{r, cache=TRUE}
 wine %>%
-  map_dbl(~sum(is.na(.))/nrow(wine))
+  map_dbl(~sum(is.na(.))/nrow(wine)) %>%
+  kable()
 ```
 
-There are a number of missing values in the data set but more of them comprise a relatively small proportion of the total observations. This should not be problematic to deal with. However, I am missing more than a quarter of all the STARS rankings. This is a sizeable amount of data. My first intuition is to remove this predictor but there is reason to believe that it will be highly significant as a predictor. There is strong evidence to suggest that people are not all that knowlege about wine purchases and will largely base their decisions on arguments from authority. Therefore, an external ranking system seems important. There is also another problem exhibited by the `aggr` plot
+There are a number of missing values in the data set but most of them comprise a relatively small proportion of the total observations. This should not be problematic to deal with. However, I am missing more than a quarter of all the STARS rankings. This is a sizeable amount of data. My first intuition is to remove this predictor but there is reason to believe that it will be highly significant as a predictor. There is strong evidence to suggest that people are not all that knowlege about wine purchases and will largely base their decisions on arguments from authority. Therefore, an external ranking system seems important. There is also another problem exhibited by the `aggr` plot
 
-```{r cache=TRUE}
+```{r cache=TRUE, warning=FALSE}
 VIM::aggr(wine[, -1], col=c('navyblue', 'yellow'),
           numbers=TRUE, sortVars=TRUE, 
           labels=names(wine[, -1]), cex.axis=.7,
@@ -56,7 +59,7 @@ VIM::aggr(wine[, -1], col=c('navyblue', 'yellow'),
 
 The above plot highlights all the missing values. As expected the two largest groups include the data with nothing missing followed by data only missing STARS. The problem, however, are most of the other observations. Although any given predictor is missing fewer than 10% of it's data, those missing observations are clumped together. That is, there are many observations that are missing multiple pieces of data. This is problematic as I do not feel comfortable imputed nearly half of the predictors for a wine. Imputation is powerful, but it is not magical.
 
-As a result I decide to remove observations missing 2 or more predcitors and impute the rest of the data. The choice for cutoff is somewhat arbitrary but I feel as if it gives a good balance of keeping as many observations as possible without imputing too much missing data.
+As a result I decide to remove observations missing 2 or more predcitors and impute the rest of the data. The choice for cutoff is somewhat arbitrary but I feel as if it gives a good balance of keeping as many observations as possible without imputing too much missing data. The proportion of observations missing 2 or more predictors is also a small proportion of the total number of observations so I will not be losing too much valuable data.
 
 ```{r cache=TRUE}
 temp.wine <- wine %>%
@@ -87,7 +90,25 @@ wine.testing <- wine.complete %>%
   filter(!row_number() %in% part)
 ```
 
-With the data imputed and seperated, I am ready to create models.
+#Data Exploration
+
+With the data imputed and seperated, I am ready to begin my data exploration. The first plot demonstrates the odd distribution of the response variable. A poisson distribution rquires an equal mean and variance and this data does not appear to have that. In fact, the disproportionately high number of 0s indicate that most wines are not purchased, however, if the wine is purchased it is for an average of 4 cases. That is, there is a binomial question of 0 cases vs. 1 or more cases and a poission question of how many cases, given that at least 1 case is purchased. 
+
+We will keep this in mind during the model analysis.
+
+```{r cache=TRUE, fig.width=4, fig.height=4, fig.align='center'}
+ggplot(wine.training, aes(TARGET)) +
+  geom_bar() +
+  labs(x='Cases Purchased',
+       y='Frequency',
+       title='Distribution of Cases Purchased')
+```
+
+Correlation between the predictors does not appear to be an issue so it is unlikely that will need to addressed in our models.
+
+```{r cache=TRUE, fig.width=4, fig.height=4, fig.align='center'}
+corrplot(cor(wine.training[, c(-1, -13, -15)]), method='circle')
+```
 
 #Multiple Linear Regression
 
@@ -99,7 +120,7 @@ The first model is be created by initially supplying all the predictors and then
 
 ```{r}
 lm.1 <- lm(TARGET ~ ., data=wine.training)
-stepAIC(lm.1, trace=0)
+MASS::stepAIC(lm.1, trace=0)
 lm.1 <- update(lm.1, . ~ . -FixedAcidity -CitricAcid -ResidualSugar)
 summary(lm.1)
 ```
@@ -121,13 +142,13 @@ summary(lm.2)
 anova(lm.1, lm.2, test='Chisq')
 ```
 
-There appears to be a statistically significant difference between the two models. The BIC selection method may have left the model is nearly all significant predictors, but it apparently performs statistically worse than the first model.
+There appears to be a statistically significant difference between the two models. The BIC selection method may have left the model is nearly all significant predictors, but it apparently performs statistically worse than the first model. This may indicate overfitting on the first model or that the removed predictors had some predictive value when taken together.
 
 #Poisson Regression
 
 ##Model 3
 
-Poisson regressions are best for count data like the TARGET response variable we have with this data set. However, there is a limitation to the poisson regression in that the mean and variance are equal. There is the possibility for overdispersion in real world data. I will need to examine that in the models.
+Poisson regressions are best for count data like the TARGET response variable in this data set. However, there is a limitation to the poisson regression in that the mean and variance are equal. There is the possibility for overdispersion in real world data. I will need to examine that in the models.
 
 For model 3 I used a poisson regression and selected the predictors using lasso. [SEE APPENDIX].
 
@@ -147,7 +168,8 @@ pchisq(lm.3$deviance, df=lm.3$df.residual, lower.tail=FALSE)
 For the second poisson regression I will attempt to remove several of the non-statistically significant predictors. The lasso method for the previous model left numerous predictors that the other models found to not be significant and that exploratory analysis indicated did not have strong predictive power. I will attempt to simplify the model without losing predictive ability. [SEE APPENDIX]
 
 ```{r cache=TRUE}
-lm.4 <- glm(TARGET ~ . -FixedAcidity -CitricAcid -ResidualSugar -Density -Sulphates, wine.training, family=poisson)
+lm.4 <- glm(TARGET ~ . -FixedAcidity -CitricAcid -ResidualSugar -Density -Sulphates, 
+            wine.training, family=poisson)
 summary(lm.4)
 ```
 
@@ -180,7 +202,7 @@ The model appears to suffer from a similar slate of issues in the diagnostics ar
 
 ##Model 6
 
-Exploring the TARGET in the training data reveals a disproportionately large amount of 0 values. 0s make up more than 20% of the total date, nearly double the proportional amount. This indicates that there is a hurdle in the number of cases purchased. That is, most wines have 0 purchases but amongst wines that have been purchased there is a nairly normal distribution.
+Exploring the TARGET in the training data reveals a disproportionately large amount of 0 values. 0s make up more than 20% of the total data, nearly double the proportional amount. This indicates that there is a hurdle in the number of cases purchased. That is, most wines have 0 purchases but amongst wines that have been purchased there is a fairly normal distribution.
 
 ```{r cache=TRUE}
 wine.training %>% 
@@ -188,18 +210,29 @@ wine.training %>%
   count()
 ```
 
-For the last model, I will fit a hurdle model. This will create two models -- a logistic to determine whether bottles were purchased and a poisson indicating how many bottles were purchased. The predictors for the poisson distribution were selected based on the best poissons distribtuion discovered above (Model #4) whie the logistic regression predictors were selected via a seperate regression analysis. [SEE APPENDIX]
+For the last model, I will fit a hurdle model. This will create two models -- a logistic to determine whether bottles were purchased and a negative binomial indicating how many bottles were purchased. The predictors for the negative binomial distribution were selected based on the best poisson distribtuion discovered above (Model #4) while the logistic regression predictors were selected via a seperate regression analysis. [SEE APPENDIX]
 
 ```{r cache=TRUE}
-lm.6 <- hurdle(TARGET ~ . -FixedAcidity -CitricAcid -ResidualSugar -Density -Sulphates | . -FixedAcidity -ResidualSugar -Density -Alcohol, wine.training)
+lm.6 <- hurdle(TARGET ~ . -FixedAcidity -CitricAcid -ResidualSugar -Density -Sulphates | 
+                 . -FixedAcidity -ResidualSugar -Density -Alcohol, wine.training, 
+               dist='negbin')
 summary(lm.6)
 ```
 
 #SELECT MODELS
 
-I will use the withheld testing data set to compare the 6 models before making a final selection.
+From the diagnostics of the models below it is clear that there is only one proper model. Model 6, the hurdle model, is not only a valid model but also accurately accounts for the disproportionate number of 0s in the training data. However, to be certain I compared the AIC, AICc and BIC values for each model. Model #6 easily performed the strongest in each of the three tests, further supporting the idea that Model #6 should be deployed. 
 
-##MODEL 1
+```{r cache=TRUE}
+cbind(AIC(lm.1), AIC(lm.2), AIC(lm.3), AIC(lm.4), AIC(lm.5), AIC(lm.6)) %>%
+  kable()
+cbind(AICc(lm.1), AICc(lm.2), AICc(lm.3), AICc(lm.4), AICc(lm.5), AICc(lm.6)) %>%
+  kable()
+cbind(useBIC(lm.1), useBIC(lm.2), useBIC(lm.3), useBIC(lm.4), useBIC(lm.5), useBIC(lm.6)) %>%
+  kable()
+```
+
+Examining the withheld data demonstrates that Model #6 properly predicts more than three times as many observations as any other model. 
 
 ```{r cache=TRUE, warning=FALSE}
 pred.1 <- predict(lm.1, newdata=wine.testing, interval='confidence')
@@ -212,30 +245,55 @@ pred.3 <- predict(lm.3, newdata=wine.testing, type='link', se.fit=TRUE)
 pred.3.upr <- pred.3$fit + (1.96*pred.3$se.fit)
 pred.3.lwr <- pred.3$fit - (1.96*pred.3$se.fit)
 pred.3.data <- data_frame(fit=pred.3$fit, lwr=pred.3.lwr, upr=pred.3.upr)
-sum(ifelse(exp(pred.3.data[, 2]) < wine.testing[, 1] & exp(pred.3.data[, 3]) > wine.testing[, 1], 1, 0))
+sum(ifelse(exp(pred.3.data[, 2]) < wine.testing[, 1] & 
+             exp(pred.3.data[, 3]) > wine.testing[, 1], 1, 0))
 
 pred.4 <- predict(lm.4, newdata=wine.testing, type='link', se.fit=TRUE)
 pred.4.upr <- pred.4$fit + (1.96*pred.4$se.fit)
 pred.4.lwr <- pred.4$fit - (1.96*pred.4$se.fit)
 pred.4.data <- data_frame(fit=pred.4$fit, lwr=pred.4.lwr, upr=pred.4.upr)
-sum(ifelse(exp(pred.4.data[, 2]) < wine.testing[, 1] & exp(pred.4.data[, 3]) > wine.testing[, 1], 1, 0))
+sum(ifelse(exp(pred.4.data[, 2]) < wine.testing[, 1] & 
+             exp(pred.4.data[, 3]) > wine.testing[, 1], 1, 0))
 
 pred.5 <- predict(lm.5, newdata=wine.testing, type='link', se.fit=TRUE)
 pred.5.upr <- pred.5$fit + (1.96*pred.5$se.fit)
 pred.5.lwr <- pred.5$fit - (1.96*pred.5$se.fit)
 pred.5.data <- data_frame(fit=pred.5$fit, lwr=pred.5.lwr, upr=pred.5.upr)
-sum(ifelse(exp(pred.5.data[, 2]) < wine.testing[, 1] & exp(pred.5.data[, 3]) > wine.testing[, 1], 1, 0))
+sum(ifelse(exp(pred.5.data[, 2]) < wine.testing[, 1] & 
+             exp(pred.5.data[, 3]) > wine.testing[, 1], 1, 0))
 
-pred.6 <- predict(lm.6, newdata=wine.testing, type='prob')
+pred.6 <- predict(lm.6, newdata=wine.testing, type='prob', se.fit=TRUE)
 
 y <- as_data_frame(pred.6) %>%
   mutate(obs = row_number()) %>%
   gather(key='prediction', value='prob', -obs) %>%
   group_by(obs) %>%
-  filter(prob == max(prob))
+  filter(prob == max(prob)) %>%
+  arrange(obs)
 
-sum(ifelse(exp(pred.6.data[, 2]) < wine.testing[, 1] & exp(pred.6.data[, 3]) > wine.testing[, 1], 1, 0))
+sum(ifelse(y == wine.testing[, 1], 1, 0))
 ```
+
+Taking the total of all the information into account, there is no question that Model #6 is the best model. As such, I will be deploying this model on the evaluation data. Unlike the training data where I could remove entries with multiple missing values, I do not have that luxery with the evaluation data. I will impute everything missing.
+
+```{r cache=TRUE, warning=FALSE, message=FALSE}
+set.seed(123)
+wine.evaluation <- read_csv('C:\\Users\\Brian\\Desktop\\GradClasses\\Summer18\\621\\621week5\\wine-evaluation-data.csv') %>%
+  dplyr::select(-IN) %>%
+  mutate(LabelAppeal = factor(LabelAppeal),
+         STARS = factor(STARS))
+
+eval.imputed.data <- mice::mice(wine.evaluation[, -1], m=5, maxit=50, 
+                                method='pmm', seed=500, printFlag=FALSE)
+wine.evaluation.complete <- cbind(wine.evaluation[, 1], complete(eval.imputed.data, 1))
+
+write_csv(as_data_frame(round(predict(lm.6, newdata=wine.evaluation.complete, 
+                                      type='prob'), 2)), 'evaluation_predictions.csv')
+```
+
+#Conclusion
+
+The analysis has successfully produced a model that can accurately predict the number of cases of wine purchased. This project underscores the importance of initial data exploration prior to the development of models. The disproportionately large number of 0 case entries highlights the need for a hurdle model. In fact, after examining a variety of different models, the hurdle model performed so much better than any other model that it was the only logical choice for deployment. Had this been an actual business situation I would have jumped right the hurdle methodology.
 
 #Appendix
 
@@ -256,7 +314,7 @@ wine.complete %>%
 
 Examining the avPlots and the diagnostics shows that heteroscadacity is a problem with this model. As the values increase so does the variance in the residuals. This indicates that this is not a valid model. In addition, the qqplot shows that the residuals do not appear to be normally distributed and have long tails which are especially challenging for linear regression to model accurately.
 
-```{r cache=TRUE}
+```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
 car::avPlots(lm.1)
 plot(lm.1)
 ```
@@ -277,7 +335,7 @@ Finally, the marginal model plots appear to indicate a good fit.
 
 The second model attempts to further restrict the number of predictors used in order to create a more simple, interpretable model.
 
-```{r cache=TRUE}
+```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
 car::avPlots(lm.2)
 plot(lm.2)
 ```
@@ -288,7 +346,7 @@ Just like with the first model, there appears to be an issue with non-constant v
 
 This model's predictor selection was performed with the lasso method.
 
-```{r cache=TRUE}
+```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
 set.seed(123)
 lasso <- lars(model.matrix(~ . -TARGET, wine.training), wine.training$TARGET)
 plot(lasso)
@@ -300,12 +358,12 @@ predict(lasso, s=0.989899, type='coef', mode='fraction')$coef
 Exploration of the model's diagnostics reveal similar issues as the mutliple linear regression model.
 
 ```{r cache=TRUE}
-dispersiontest(lm.3)
+AER::dispersiontest(lm.3)
 ```
 
 Dispersion is not an issue for this model so we will not need to adjust for that in our model.
 
-```{r cache=TRUE}
+```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
 summary(goodfit(wine.training$TARGET))
 rootogram(table(wine.training$TARGET), fitted=table(c(trunc(fitted(lm.3)), 8)), type='hanging')
 ```
@@ -314,7 +372,7 @@ A goodfit test indicates that a poisson distribution is a poor choice for this m
 
 ##Model 4
 
-```{r cache=TRUE}
+```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
 summary(fit <- goodfit(wine.training$TARGET))
 rootogram(table(wine.training$TARGET), fitted=table(c(trunc(fitted(lm.4)), 8)), type='hanging')
 ```
@@ -323,7 +381,7 @@ The modification of the predictors has not addressed the underlying issue that t
 
 ##Model 5
 
-```{r cache=TRUE}
+```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
 plot(lm.5)
 rootogram(table(wine.training$TARGET), fitted=table(c(trunc(fitted(lm.5)), 8)), type='hanging')
 ```
@@ -332,9 +390,16 @@ The diagnostics for model 5 paint a similarly poor fit as the previous models. A
 
 ##Model 6
 
-First, the predictors for the logistic regression portino of the hurdle model were selected by performing a logistic regression on the data.
+In order to select the link functions, I performed an examination between a poisson distribution and a negative binomial distribution. The stronger performance of the negative binomial plot led me to select that as the link function.
 
-```{r cache=TRUE}
+```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
+distplot(wine.training$TARGET, type='poisson')
+distplot(wine.training$TARGET, type='nbinomial')
+```
+
+The predictors for the logistic regression portion of the hurdle model were selected by performing a logistic regression on the data.
+
+```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
 wine.bi <- wine.complete %>%
   mutate(TARGET_BI = factor(ifelse(TARGET > 0, 1, 0))) %>%
   dplyr::select(-TARGET)
@@ -347,13 +412,13 @@ summary(lm.bi)
 
 Exploring the fit of the model yields some promising results. First, the lack of fit in the qqplot has been addressed.
 
-```{r cache=TRUE}
+```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
 faraway::halfnorm(residuals(lm.6))
 ```
 
-#MUST CONTINUE DIAGNOSTIC, and ROOTOGRAM?
+The rootogram as well shows a better fit. We are over fitting on 0, 1 and 2 but not nearly as much as the previous models.
 
-```{r cache=TRUE}
+```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
 y <- as_data_frame(predict(lm.6, newdata=wine.training, type='prob')) %>%
   mutate(obs = row_number()) %>%
   gather(key='prediction', value='prob', -obs) %>%
@@ -362,8 +427,5 @@ y <- as_data_frame(predict(lm.6, newdata=wine.training, type='prob')) %>%
 
 rootogram(table(wine.training$TARGET), fitted=table(c(y$prediction, 8)), type='hanging')
 ```
-
-
-
 
 
