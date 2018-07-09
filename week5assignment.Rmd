@@ -59,7 +59,7 @@ VIM::aggr(wine[, -1], col=c('navyblue', 'yellow'),
 
 The above plot highlights all the missing values. As expected the two largest groups include the data with nothing missing followed by data only missing STARS. The problem, however, are most of the other observations. Although any given predictor is missing fewer than 10% of it's data, those missing observations are clumped together. That is, there are many observations that are missing multiple pieces of data. This is problematic as I do not feel comfortable imputed nearly half of the predictors for a wine. Imputation is powerful, but it is not magical.
 
-As a result I decide to remove observations missing 2 or more predcitors and impute the rest of the data. The choice for cutoff is somewhat arbitrary but I feel as if it gives a good balance of keeping as many observations as possible without imputing too much missing data. The proportion of observations missing 2 or more predictors is also a small proportion of the total number of observations so I will not be losing too much valuable data.
+As a result I decide to remove observations missing 2 or more predictors and impute the rest of the data. The choice for cutoff is somewhat arbitrary but I feel as if it gives a good balance of keeping as many observations as possible without imputing too much missing data. The proportion of observations missing 2 or more predictors is also a small proportion of the total number of observations so I will not be losing too much valuable data.
 
 ```{r cache=TRUE}
 temp.wine <- wine %>%
@@ -92,11 +92,11 @@ wine.testing <- wine.complete %>%
 
 #Data Exploration
 
-With the data imputed and seperated, I am ready to begin my data exploration. The first plot demonstrates the odd distribution of the response variable. A poisson distribution rquires an equal mean and variance and this data does not appear to have that. In fact, the disproportionately high number of 0s indicate that most wines are not purchased, however, if the wine is purchased it is for an average of 4 cases. That is, there is a binomial question of 0 cases vs. 1 or more cases and a poission question of how many cases, given that at least 1 case is purchased. 
+With the data imputed and seperated, I am ready to begin my data exploration. The first plot demonstrates the odd distribution of the response variable. A poisson distribution rquires an equal mean and variance and this data does not have that. The mean is 3.18 while the variance is about 3.5. In fact, the disproportionately high number of 0s indicate that most wines are not purchased, however, if the wine is purchased it is for an average of 4 cases. That is, there is a binomial question of 0 cases vs. 1 or more cases and a poission question of how many cases, given that at least 1 case is purchased. 
 
 We will keep this in mind during the model analysis.
 
-```{r cache=TRUE, fig.width=4, fig.height=4, fig.align='center'}
+```{r cache=TRUE, fig.width=3, fig.height=3, fig.align='center'}
 ggplot(wine.training, aes(TARGET)) +
   geom_bar() +
   labs(x='Cases Purchased',
@@ -142,7 +142,7 @@ summary(lm.2)
 anova(lm.1, lm.2, test='Chisq')
 ```
 
-There appears to be a statistically significant difference between the two models. The BIC selection method may have left the model is nearly all significant predictors, but it apparently performs statistically worse than the first model. This may indicate overfitting on the first model or that the removed predictors had some predictive value when taken together.
+There appears to be a statistically significant difference between the two models. The BIC selection method may have left the model with nearly all significant predictors, but it apparently performs statistically worse than the first model. This may indicate overfitting on the first model or that the removed predictors had some predictive value when taken together.
 
 #Poisson Regression
 
@@ -157,7 +157,7 @@ lm.3 <- glm(TARGET ~ . -FixedAcidity, wine.training, family=poisson)
 summary(lm.3)
 ```
 
-Examining the model indicates a very poor fit. Calculating the dispersion parameter indicates that dispersion does not appear to be a problem however. To be sure, I will fit a quasipoisson regression.
+Examining the model indicates a very poor fit. Calculating the dispersion parameter indicates that dispersion does not appear to be a problem.
 
 ```{r cache=TRUE}
 pchisq(lm.3$deviance, df=lm.3$df.residual, lower.tail=FALSE)
@@ -224,42 +224,41 @@ summary(lm.6)
 From the diagnostics of the models below it is clear that there is only one proper model. Model 6, the hurdle model, is not only a valid model but also accurately accounts for the disproportionate number of 0s in the training data. However, to be certain I compared the AIC, AICc and BIC values for each model. Model #6 easily performed the strongest in each of the three tests, further supporting the idea that Model #6 should be deployed. 
 
 ```{r cache=TRUE}
-cbind(AIC(lm.1), AIC(lm.2), AIC(lm.3), AIC(lm.4), AIC(lm.5), AIC(lm.6)) %>%
-  kable()
-cbind(AICc(lm.1), AICc(lm.2), AICc(lm.3), AICc(lm.4), AICc(lm.5), AICc(lm.6)) %>%
-  kable()
-cbind(useBIC(lm.1), useBIC(lm.2), useBIC(lm.3), useBIC(lm.4), useBIC(lm.5), useBIC(lm.6)) %>%
+data_frame('Model' = 1:6,
+           'AIC' = c(AIC(lm.1), AIC(lm.2), AIC(lm.3), AIC(lm.4), AIC(lm.5), AIC(lm.6)),
+           'AICc' = c(AICc(lm.1), AICc(lm.2), AICc(lm.3), AICc(lm.4), AICc(lm.5), AICc(lm.6)),
+           'BIC' = c(useBIC(lm.1), useBIC(lm.2), useBIC(lm.3), useBIC(lm.4), useBIC(lm.5), useBIC(lm.6))) %>%
   kable()
 ```
 
-Examining the withheld data demonstrates that Model #6 properly predicts more than three times as many observations as any other model. 
+Examining the withheld testing data demonstrates that Model #6 properly predicts more than three times as many observations as any other model. 
 
 ```{r cache=TRUE, warning=FALSE}
 pred.1 <- predict(lm.1, newdata=wine.testing, interval='confidence')
-sum(ifelse(pred.1[, 2] < wine.testing[, 1] & pred.1[, 3] > wine.testing[, 1], 1, 0))
+a.1 <- sum(ifelse(pred.1[, 2] < wine.testing[, 1] & pred.1[, 3] > wine.testing[, 1], 1, 0))
 
 pred.2 <- predict(lm.2, newdata=wine.testing, interval='confidence')
-sum(ifelse(pred.2[, 2] < wine.testing[, 1] & pred.2[, 3] > wine.testing[, 1], 1, 0))
+a.2 <- sum(ifelse(pred.2[, 2] < wine.testing[, 1] & pred.2[, 3] > wine.testing[, 1], 1, 0))
 
 pred.3 <- predict(lm.3, newdata=wine.testing, type='link', se.fit=TRUE)
 pred.3.upr <- pred.3$fit + (1.96*pred.3$se.fit)
 pred.3.lwr <- pred.3$fit - (1.96*pred.3$se.fit)
 pred.3.data <- data_frame(fit=pred.3$fit, lwr=pred.3.lwr, upr=pred.3.upr)
-sum(ifelse(exp(pred.3.data[, 2]) < wine.testing[, 1] & 
+a.3 <- sum(ifelse(exp(pred.3.data[, 2]) < wine.testing[, 1] & 
              exp(pred.3.data[, 3]) > wine.testing[, 1], 1, 0))
 
 pred.4 <- predict(lm.4, newdata=wine.testing, type='link', se.fit=TRUE)
 pred.4.upr <- pred.4$fit + (1.96*pred.4$se.fit)
 pred.4.lwr <- pred.4$fit - (1.96*pred.4$se.fit)
 pred.4.data <- data_frame(fit=pred.4$fit, lwr=pred.4.lwr, upr=pred.4.upr)
-sum(ifelse(exp(pred.4.data[, 2]) < wine.testing[, 1] & 
+a.4 <- sum(ifelse(exp(pred.4.data[, 2]) < wine.testing[, 1] & 
              exp(pred.4.data[, 3]) > wine.testing[, 1], 1, 0))
 
 pred.5 <- predict(lm.5, newdata=wine.testing, type='link', se.fit=TRUE)
 pred.5.upr <- pred.5$fit + (1.96*pred.5$se.fit)
 pred.5.lwr <- pred.5$fit - (1.96*pred.5$se.fit)
 pred.5.data <- data_frame(fit=pred.5$fit, lwr=pred.5.lwr, upr=pred.5.upr)
-sum(ifelse(exp(pred.5.data[, 2]) < wine.testing[, 1] & 
+a.5 <- sum(ifelse(exp(pred.5.data[, 2]) < wine.testing[, 1] & 
              exp(pred.5.data[, 3]) > wine.testing[, 1], 1, 0))
 
 pred.6 <- predict(lm.6, newdata=wine.testing, type='prob', se.fit=TRUE)
@@ -271,7 +270,9 @@ y <- as_data_frame(pred.6) %>%
   filter(prob == max(prob)) %>%
   arrange(obs)
 
-sum(ifelse(y == wine.testing[, 1], 1, 0))
+a.6 <- sum(ifelse(y == wine.testing[, 1], 1, 0))
+data_frame('Model' = 1:6,
+           'Correct' = c(a.1, a.2, a.3, a.4, a.5, a.6))
 ```
 
 Taking the total of all the information into account, there is no question that Model #6 is the best model. As such, I will be deploying this model on the evaluation data. Unlike the training data where I could remove entries with multiple missing values, I do not have that luxery with the evaluation data. I will impute everything missing.
@@ -316,16 +317,19 @@ Examining the avPlots and the diagnostics shows that heteroscadacity is a proble
 
 ```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
 car::avPlots(lm.1)
+par(mfrow=c(2,2))
 plot(lm.1)
 ```
 
 There does not appear to be an issue with mutli-collinearity in the data so it does not appear that there are any reasonable modifications that can be made to the raw data to make the multiple linear regression fit better.
 
 ```{r cache=TRUE}
-car::vif(lm.1)
+car::vif(lm.1) %>%
+  kable()
 ```
 
-```{r cache=TRUE, warning=FALSE}
+```{r cache=TRUE, warning=FALSE, fig.height=4, fig.width=4, fig.align='center'}
+par(mfrow=c(2,1))
 car::mmps(lm.1)
 ```
 
@@ -336,7 +340,9 @@ Finally, the marginal model plots appear to indicate a good fit.
 The second model attempts to further restrict the number of predictors used in order to create a more simple, interpretable model.
 
 ```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
+par(mfrow=c(2,1))
 car::avPlots(lm.2)
+par(mfrow=c(2,2))
 plot(lm.2)
 ```
 
@@ -382,6 +388,7 @@ The modification of the predictors has not addressed the underlying issue that t
 ##Model 5
 
 ```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
+par(mfrow=c(2,2))
 plot(lm.5)
 rootogram(table(wine.training$TARGET), fitted=table(c(trunc(fitted(lm.5)), 8)), type='hanging')
 ```
@@ -392,7 +399,7 @@ The diagnostics for model 5 paint a similarly poor fit as the previous models. A
 
 In order to select the link functions, I performed an examination between a poisson distribution and a negative binomial distribution. The stronger performance of the negative binomial plot led me to select that as the link function.
 
-```{r cache=TRUE, fig.height=4, fig.width=4, fig.align='center'}
+```{r cache=TRUE, fig.height=3, fig.width=3, fig.align='center'}
 distplot(wine.training$TARGET, type='poisson')
 distplot(wine.training$TARGET, type='nbinomial')
 ```
