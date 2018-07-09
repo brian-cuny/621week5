@@ -20,6 +20,8 @@ library(car)
 library(mice)
 library(lars)
 library(pscl)
+library(vcd)
+library(MASS)
 wine <- read_csv('C:\\Users\\Brian\\Desktop\\GradClasses\\Summer18\\621\\621week5\\wine-training-data.csv') %>%
   dplyr::select(-INDEX) %>%
   mutate(LabelAppeal = factor(LabelAppeal),
@@ -106,25 +108,31 @@ The diagnostics [SEE APPENDIX] have many causes for concern. The most immediatel
 
 ##Model 2
 
-For the 2nd model I will attempt to use a robust fitting to address the heteroscedasticity seen in the previous model. [SEE APPENDIX]
+For the 2nd model I will use BIC as a predictor selection method instead of AIC. BIC has a stronger penalty for predictors. This may help create a more simple and interpretable model. [SEE APPENDIX]
 
 ```{r cache=TRUE}
-lm.2 <- rlm(TARGET ~ . -FixedAcidity -CitricAcid -ResidualSugar, wine.training)
+lm.2 <- lm(TARGET ~ ., wine.training)
+stepAIC(lm.2, k=log(nrow(wine.training)), trace=0)
+lm.2 <- update(lm.2, . ~ . -FixedAcidity -ResidualSugar -Density -pH -Sulphates, wine.training)
 summary(lm.2)
 ```
 
-Overall, neither of these two models appear to adequetly address the data. I will examine next with a poisson regression.
+```{r cache=TRUE}
+anova(lm.1, lm.2, test='Chisq')
+```
+
+There appears to be a statistically significant difference between the two models. The BIC selection method may have left the model is nearly all significant predictors, but it apparently performs statistically worse than the first model.
 
 #Poisson Regression
 
 ##Model 3
 
-Poisson regressions are best for count data, like the TARGET response variable we have with this data set. However, there is a limitation to the poisson regression in that the mean and variance are equal. There is the possibility for overdispersion in real world data. I will need to examine that in the models.
+Poisson regressions are best for count data like the TARGET response variable we have with this data set. However, there is a limitation to the poisson regression in that the mean and variance are equal. There is the possibility for overdispersion in real world data. I will need to examine that in the models.
 
 For model 3 I used a poisson regression and selected the predictors using lasso. [SEE APPENDIX].
 
 ```{r cache=TRUE}
-lm.3 <- glm(TARGET ~ . -CitricAcid, wine.training, family=poisson)
+lm.3 <- glm(TARGET ~ . -FixedAcidity, wine.training, family=poisson)
 summary(lm.3)
 ```
 
@@ -132,32 +140,37 @@ Examining the model indicates a very poor fit. Calculating the dispersion parame
 
 ```{r cache=TRUE}
 pchisq(lm.3$deviance, df=lm.3$df.residual, lower.tail=FALSE)
-sum(residuals(lm.3, type='pearson')^2)/lm.3$df.res
 ```
 
 ##Model 4
 
-As mentioned above I fit a quasipoisson regression and used lasso to select the predictors. The dispersion of 0.83 indicates an underdispersion as opposed to an overdispersion and it's closeness to 1 indicates that dispersion, in general, is not a problem for this model.
+For the second poisson regression I will attempt to remove several of the non-statistically significant predictors. The lasso method for the previous model left numerous predictors that the other models found to not be significant and that exploratory analysis indicated did not have strong predictive power. I will attempt to simplify the model without losing predictive ability. [SEE APPENDIX]
 
 ```{r cache=TRUE}
-lm.4 <- glm(TARGET ~ . -FixedAcidity, wine.training, family=quasipoisson)
+lm.4 <- glm(TARGET ~ . -FixedAcidity -CitricAcid -ResidualSugar -Density -Sulphates, wine.training, family=poisson)
 summary(lm.4)
 ```
+
+```{r cache=TRUE}
+anova(lm.3, lm.4, test='Chisq')
+```
+
+The anova test indicates that the more simple model is a valid substitution for the previous model without causing any lost of predictive ability.
 
 ```{r cache=TRUE}
 pchisq(lm.4$deviance, df=lm.4$df.residual, lower.tail=FALSE)
 ```
 
-This model still appears to be a poor fit.
+However, like the previous model this model still appears to be a poor fit. 
 
 #Negative Binomial
 
 ##Model 5
 
-When a model appears as if it should follow a poisson distribution but the poisson model does not appear to be an appropriate fit, a negative biniomial model may address the underlying issues. I will fitt a negative binomial model and select the predictors using `stepAIC`.
+When a model appears as if it should follow a poisson distribution but the poisson model does not appear to be an appropriate fit, a negative biniomial model may address the underlying issues. I will fit a negative binomial model and select the predictors using `stepAIC`.
 
 ```{r cache=TRUE, warning=FALSE}
-lm.5 <- glm.nb(TARGET ~ ., data=wine.complete)
+lm.5 <- glm.nb(TARGET ~ ., data=wine.training)
 stepAIC(lm.5, trace=0)
 lm.5 <- update(lm.5, . ~ . -FixedAcidity -ResidualSugar)
 summary(lm.5)
@@ -175,10 +188,10 @@ wine.training %>%
   count()
 ```
 
-For the last model, I will fit a hurdle model. This will create two models -- a logistic to determine whether bottles were purchased and a poisson indicating how many bottles were purchased. I fit two different sets of predictors for the two parts of the model based on their separate diagnostics. [SEE APPENDIX]
+For the last model, I will fit a hurdle model. This will create two models -- a logistic to determine whether bottles were purchased and a poisson indicating how many bottles were purchased. The predictors for the poisson distribution were selected based on the best poissons distribtuion discovered above (Model #4) whie the logistic regression predictors were selected via a seperate regression analysis. [SEE APPENDIX]
 
 ```{r cache=TRUE}
-lm.6 <- hurdle(TARGET ~ . -CitricAcid | . -FixedAcidity -ResidualSugar -Density -Alcohol, wine.complete)
+lm.6 <- hurdle(TARGET ~ . -FixedAcidity -CitricAcid -ResidualSugar -Density -Sulphates | . -FixedAcidity -ResidualSugar -Density -Alcohol, wine.training)
 summary(lm.6)
 ```
 
@@ -214,17 +227,141 @@ pred.5.data <- data_frame(fit=pred.5$fit, lwr=pred.5.lwr, upr=pred.5.upr)
 sum(ifelse(exp(pred.5.data[, 2]) < wine.testing[, 1] & exp(pred.5.data[, 3]) > wine.testing[, 1], 1, 0))
 
 pred.6 <- predict(lm.6, newdata=wine.testing, type='prob')
+
+y <- as_data_frame(pred.6) %>%
+  mutate(obs = row_number()) %>%
+  gather(key='prediction', value='prob', -obs) %>%
+  group_by(obs) %>%
+  filter(prob == max(prob))
+
 sum(ifelse(exp(pred.6.data[, 2]) < wine.testing[, 1] & exp(pred.6.data[, 3]) > wine.testing[, 1], 1, 0))
 ```
 
+#Appendix
 
+##Model 1
 
+In order to perform a multiple linear regression their must be a linear relationship between the response variable and the predictor. The presence of this relationship is hard to determine due to the small variation in the reponse variable value. However, each predictor appears to be linearly related to the reponse. 
 
+```{r cache=TRUE, warning=FALSE}
+wine.complete %>%
+  gather(key='predictor', value='value', 2:15, -TARGET) %>%
+  ggplot(aes(value, TARGET)) +
+  geom_point() +
+  geom_smooth(method='loess') +
+  facet_wrap(~predictor, scales='free') +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+```
 
+Examining the avPlots and the diagnostics shows that heteroscadacity is a problem with this model. As the values increase so does the variance in the residuals. This indicates that this is not a valid model. In addition, the qqplot shows that the residuals do not appear to be normally distributed and have long tails which are especially challenging for linear regression to model accurately.
 
+```{r cache=TRUE}
+car::avPlots(lm.1)
+plot(lm.1)
+```
 
+There does not appear to be an issue with mutli-collinearity in the data so it does not appear that there are any reasonable modifications that can be made to the raw data to make the multiple linear regression fit better.
 
+```{r cache=TRUE}
+car::vif(lm.1)
+```
 
+```{r cache=TRUE, warning=FALSE}
+car::mmps(lm.1)
+```
+
+Finally, the marginal model plots appear to indicate a good fit.
+
+##Model 2
+
+The second model attempts to further restrict the number of predictors used in order to create a more simple, interpretable model.
+
+```{r cache=TRUE}
+car::avPlots(lm.2)
+plot(lm.2)
+```
+
+Just like with the first model, there appears to be an issue with non-constant variance and long tails in the qqplot. The anova test performed aboved indicates a reduction in predictive ability in this model compared to the first one. It appears that I may have removed too many predictors. The marginal model plots and multi-collinearity check result in similar results to model 1.
+
+##Model 3
+
+This model's predictor selection was performed with the lasso method.
+
+```{r cache=TRUE}
+set.seed(123)
+lasso <- lars(model.matrix(~ . -TARGET, wine.training), wine.training$TARGET)
+plot(lasso)
+cvlmod <- cv.lars(model.matrix(~ . -TARGET, wine.training), wine.training$TARGET)
+cvlmod$index[which.min(cvlmod$cv)]
+predict(lasso, s=0.989899, type='coef', mode='fraction')$coef
+```
+
+Exploration of the model's diagnostics reveal similar issues as the mutliple linear regression model.
+
+```{r cache=TRUE}
+dispersiontest(lm.3)
+```
+
+Dispersion is not an issue for this model so we will not need to adjust for that in our model.
+
+```{r cache=TRUE}
+summary(goodfit(wine.training$TARGET))
+rootogram(table(wine.training$TARGET), fitted=table(c(trunc(fitted(lm.3)), 8)), type='hanging')
+```
+
+A goodfit test indicates that a poisson distribution is a poor choice for this model. The corresponding rootogram agrees with this assessment by underfitting predictions of 0 and overfitting predictions of 1 and 2 and 3.
+
+##Model 4
+
+```{r cache=TRUE}
+summary(fit <- goodfit(wine.training$TARGET))
+rootogram(table(wine.training$TARGET), fitted=table(c(trunc(fitted(lm.4)), 8)), type='hanging')
+```
+
+The modification of the predictors has not addressed the underlying issue that the model is underpredicting 0s and overpredicting 1, 2 and 3.
+
+##Model 5
+
+```{r cache=TRUE}
+plot(lm.5)
+rootogram(table(wine.training$TARGET), fitted=table(c(trunc(fitted(lm.5)), 8)), type='hanging')
+```
+
+The diagnostics for model 5 paint a similarly poor fit as the previous models. All of them severly underrepresent the amount of 0 cases purchased. This all indicates that this data should be modeled with a hurdle model.
+
+##Model 6
+
+First, the predictors for the logistic regression portino of the hurdle model were selected by performing a logistic regression on the data.
+
+```{r cache=TRUE}
+wine.bi <- wine.complete %>%
+  mutate(TARGET_BI = factor(ifelse(TARGET > 0, 1, 0))) %>%
+  dplyr::select(-TARGET)
+
+lm.bi <- glm(TARGET_BI ~ ., data=wine.bi, family=binomial)
+MASS::stepAIC(lm.bi, trace=0)
+lm.bi <- update(lm.bi, . ~ . -FixedAcidity -ResidualSugar -Density -Alcohol)
+summary(lm.bi)
+```
+
+Exploring the fit of the model yields some promising results. First, the lack of fit in the qqplot has been addressed.
+
+```{r cache=TRUE}
+faraway::halfnorm(residuals(lm.6))
+```
+
+#MUST CONTINUE DIAGNOSTIC, and ROOTOGRAM?
+
+```{r cache=TRUE}
+y <- as_data_frame(predict(lm.6, newdata=wine.training, type='prob')) %>%
+  mutate(obs = row_number()) %>%
+  gather(key='prediction', value='prob', -obs) %>%
+  group_by(obs) %>%
+  filter(prob == max(prob))
+
+rootogram(table(wine.training$TARGET), fitted=table(c(y$prediction, 8)), type='hanging')
+```
 
 
 
